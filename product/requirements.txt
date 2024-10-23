@@ -1,0 +1,6 @@
+Flask
+SQLAlchemy
+strawberry-graphql
+SQLAlchemy-Utils
+strawberry-graphql[debug-server]
+flask_migrate
