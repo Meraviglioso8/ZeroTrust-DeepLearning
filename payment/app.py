@@ -5,6 +5,7 @@ import paypalrestsdk
 from strawberry.flask.views import GraphQLView
 import strawberry
 from config import Config
+from typing import List, Optional
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -29,7 +30,7 @@ def fetch_order(order_id: int):
     query GetOrder($id: Int!) {
         order(id: $id) {
             id
-            total_price
+            totalPrice
         }
     }
     """
@@ -66,26 +67,33 @@ def process_paypal_payment(order_total: float) -> dict:
         raise Exception("Error creating payment")
 
 @strawberry.type
+class Query:
+    with app.app_context():
+        hello: str = "Nothing just an inchident, on the race."
+
+@strawberry.type
 class Mutation:
     @strawberry.mutation
     def process_payment(self, order_id: int) -> str:
-        order = fetch_order(order_id)
-        if not order:
-            raise Exception("Order not found")
-        total_price = order["total_price"]
-        payment_response = process_paypal_payment(total_price)
+        with app.app_context():
+            order = fetch_order(order_id)
+            if not order:
+                raise Exception("Order not found")
+            total_price = order["totalPrice"]
+            print("Total price is" + str(total_price))
+            payment_response = process_paypal_payment(total_price)
 
-        new_payment = Payment(order_id=order_id, amount=total_price, status="Pending")
-        db.session.add(new_payment)
-        db.session.commit()
+            new_payment = Payment(order_id=order_id, amount=total_price, status="Pending")
+            db.session.add(new_payment)
+            db.session.commit()
 
-        for link in payment_response['links']:
-            if link['rel'] == 'approval_url':
-                return link['href']
+            for link in payment_response['links']:
+                if link['rel'] == 'approval_url':
+                    return link['href']
 
-        return "Error: PayPal approval URL not found"
+            return "Error: PayPal approval URL not found"
 
-schema = strawberry.Schema(mutation=Mutation)
+schema = strawberry.Schema(query=Query, mutation=Mutation)
 
 app.add_url_rule(
     '/graphql',
