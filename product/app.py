@@ -158,10 +158,22 @@ class Mutation:
     @strawberry.mutation
     def add_order(self, product_id: int, quantity: int, total_price: float) -> OrderType:
         with app.app_context():
+            product = Product.query.get(product_id)
+            if not product:
+                raise Exception("Product not found")
+            
+            total_price = product.price * quantity
+            
             new_order = Order(product_id=product_id, quantity=quantity, total_price=total_price)
             db.session.add(new_order)
             db.session.commit()
-            return OrderType(id=new_order.id, quantity=new_order.quantity, total_price=new_order.total_price, product_id=new_order.product_id)
+            
+            return OrderType(
+                id=new_order.id,
+                quantity=new_order.quantity,
+                total_price=new_order.total_price,
+                product_id=new_order.product_id
+            )
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
