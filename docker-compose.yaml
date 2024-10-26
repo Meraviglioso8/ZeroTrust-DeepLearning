@@ -1,0 +1,93 @@
+version: '3'
+
+services:
+  # PostgreSQL for Keystone
+  postgres_keystone:
+    image: postgres:13
+    container_name: postgres_keystone
+    environment:
+      POSTGRES_USER: keystone
+      POSTGRES_PASSWORD: keystonepass
+      POSTGRES_DB: keystone_db
+    ports:
+      - "5432:5432"  # Keystone DB exposed on 5432
+    volumes:
+      - pgdata_keystone:/var/lib/postgresql/data
+    networks:
+      - openstack
+
+  # PostgreSQL for Authentication Service
+  postgres_auth:
+    image: postgres:13
+    container_name: postgres_auth
+    environment:
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_pass
+      POSTGRES_DB: auth_db
+    ports:
+      - "5433:5432"  # Auth DB exposed on 5433 (inside container it's still 5432)
+    volumes:
+      - pgdata_auth:/var/lib/postgresql/data
+    networks:
+      - openstack
+
+  # Redis for Barbican caching/queue management
+  redis:
+    image: redis:6
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - openstack
+
+  # Keystone service
+  keystone:
+    build: ./openfake/keystone
+    container_name: keystone
+    environment:
+      - OS_USERNAME=admin
+      - OS_PASSWORD=adminpass
+      - OS_PROJECT_NAME=admin
+      - OS_USER_DOMAIN_NAME=Default
+      - OS_PROJECT_DOMAIN_NAME=Default
+      - OS_AUTH_URL=http://keystone:5000/v3
+    ports:
+      - "5000:5000"
+    networks:
+      - openstack
+    depends_on:
+      - postgres_keystone
+
+  # Barbican service
+  barbican:
+    build: ./openfake/barbican/
+    container_name: barbican
+    environment:
+      OS_AUTH_URL: http://keystone:5000/v3
+      OS_USERNAME: admin
+      OS_PASSWORD: adminpass
+      OS_PROJECT_NAME: admin
+      OS_USER_DOMAIN_NAME: Default
+      OS_PROJECT_DOMAIN_NAME: Default
+      POSTGRES_USER: barbican
+      POSTGRES_PASSWORD: barbicanpass
+      POSTGRES_DB: barbican
+      POSTGRES_HOST: postgres_auth  # Point to the authentication PostgreSQL DB
+      POSTGRES_PORT: 5433  # Port for the authentication service DB
+    ports:
+      - "9311:9311"
+    networks:
+      - openstack
+    depends_on:
+      - postgres_auth
+      - keystone
+
+networks:
+  openstack:
+    driver: bridge
+
+volumes:
+  pgdata_keystone:  # Volume for Keystone DB
+  pgdata_auth:      # Volume for Authentication DB
+  redisdata:        # Volume for Redis data
