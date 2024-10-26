@@ -5,7 +5,7 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y python3-pip 
 
 # Set the working directory in the container
-WORKDIR /authorization
+WORKDIR /authorization-service
 
 # Copy requirements.txt into the container
 COPY requirements.txt .
@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Copy the rest of the application code
-COPY . /authorization
+COPY . /authorization-service
 
 # Expose the port that the Strawberry app will run on
 EXPOSE 5001
