@@ -17,8 +17,8 @@ class Product(db.Model):
     name = db.Column(db.String(100))
     description = db.Column(db.String(200))
     price = db.Column(db.Float)
-    comments = db.relationship('Comment', backref='product', lazy=True)
-    ratings = db.relationship('Rating', backref='product', lazy=True)
+    comments = db.relationship('Comment', backref='product', lazy=True, cascade="all, delete-orphan")
+    ratings = db.relationship('Rating', backref='product', lazy=True, cascade="all, delete-orphan")
 
 class Comment(db.Model):
     __tablename__ = 'comments'
@@ -35,7 +35,7 @@ class Rating(db.Model):
 class Order(db.Model):
     __tablename__ = 'orders'
     id = db.Column(db.Integer, primary_key=True)
-    product_id = db.Column(db.Integer, db.ForeignKey('products.id'))
+    product_id = db.Column(db.Integer, db.ForeignKey('products.id', ondelete="SET NULL"), nullable=True)
     quantity = db.Column(db.Integer)
     total_price = db.Column(db.Float)
 
