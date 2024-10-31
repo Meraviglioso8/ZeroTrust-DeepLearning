@@ -1,15 +1,52 @@
-import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, requests, g
 from flask_sqlalchemy import SQLAlchemy
 import paypalrestsdk
 from strawberry.flask.views import GraphQLView
 import strawberry
+import jwt
 from config import Config
 from typing import List, Optional
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
+
+# def request_token_from_authorization(user_id, permissions):
+#     url = Config.AUTHORIZATION_URL
+#     payload = {"user_id": user_id, "permissions": permissions}
+#     response = requests.post(url, json=payload)
+#     if response.status_code == 200:
+#         return response.json().get("token")
+#     return None
+
+def token_verification_middleware(app):
+    @app.before_request
+    def verify_jwt_token():
+        token = request.headers.get('Authorization')
+        if token:
+            token = token.split(" ")[1]  
+            try:
+                payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+                g.user = payload 
+            except jwt.ExpiredSignatureError:
+                return jsonify({"error": "Token expired"}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({"error": "Invalid token"}), 401
+        else:
+            g.user = None
+
+token_verification_middleware(app)
+
+def require_permissions(allowed_permissions):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = g.get('user')
+            if not user or not set(user.get('permissions', [])).intersection(allowed_permissions):
+                raise Exception("Unauthorized access")
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 paypalrestsdk.configure({
     "mode": app.config["PAYPAL_MODE"],

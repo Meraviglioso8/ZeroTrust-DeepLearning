@@ -14,13 +14,13 @@ app.config.from_object(Config)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-def request_token_from_authorization(user_id, permissions):
-    url = Config.AUTHORIZATION_URL
-    payload = {"user_id": user_id, "permissions": permissions}
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        return response.json().get("token")
-    return None
+# def request_token_from_authorization(user_id, permissions):
+#     url = Config.AUTHORIZATION_URL
+#     payload = {"user_id": user_id, "permissions": permissions}
+#     response = requests.post(url, json=payload)
+#     if response.status_code == 200:
+#         return response.json().get("token")
+#     return None
 
 def token_verification_middleware(app):
     @app.before_request
@@ -123,7 +123,21 @@ class Query:
                     ratings=[RatingType(id=rating.id, score=rating.score, product_id=rating.product_id) for rating in product.ratings]
                 ) for product in products
             ]
-
+    
+    @strawberry.field
+    @require_permissions(['admin'])
+    def all_orders(self) -> List[OrderType]:
+        with app.app_context():
+            orders = Order.query.all()
+            return [
+                OrderType(
+                    id=order.id,
+                    quantity=order.quantity,
+                    total_price=order.total_price,
+                    product_id=order.product_id
+                ) for order in orders
+            ]
+    
     @strawberry.field
     def order(self, id: int) -> Optional[OrderType]:
         with app.app_context():
