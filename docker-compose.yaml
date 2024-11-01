@@ -41,48 +41,6 @@ services:
     networks:
       - openstack
 
-  # Keystone service
-  keystone:
-    build: ./openfake/keystone
-    container_name: keystone
-    environment:
-      - OS_USERNAME=admin
-      - OS_PASSWORD=adminpass
-      - OS_PROJECT_NAME=admin
-      - OS_USER_DOMAIN_NAME=Default
-      - OS_PROJECT_DOMAIN_NAME=Default
-      - OS_AUTH_URL=http://keystone:5000/v3
-    ports:
-      - "5000:5000"
-    networks:
-      - openstack
-    depends_on:
-      - postgres_keystone
-
-  # Barbican service
-  barbican:
-    build: ./openfake/barbican/
-    container_name: barbican
-    environment:
-      OS_AUTH_URL: http://keystone:5000/v3
-      OS_USERNAME: admin
-      OS_PASSWORD: adminpass
-      OS_PROJECT_NAME: admin
-      OS_USER_DOMAIN_NAME: Default
-      OS_PROJECT_DOMAIN_NAME: Default
-      POSTGRES_USER: barbican
-      POSTGRES_PASSWORD: barbicanpass
-      POSTGRES_DB: barbican
-      POSTGRES_HOST: postgres_auth  # Point to the authentication PostgreSQL DB
-      POSTGRES_PORT: 5433  # Port for the authentication service DB
-    ports:
-      - "9311:9311"
-    networks:
-      - openstack
-    depends_on:
-      - postgres_auth
-      - keystone
-
 networks:
   openstack:
     driver: bridge

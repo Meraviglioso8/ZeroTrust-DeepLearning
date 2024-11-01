@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Environment variables for the Authentication Service database
-AUTH_DB_HOST="postgres_auth"
+AUTH_DB_HOST="localhost"
 AUTH_DB_PORT=5433
 AUTH_DB_NAME="auth_db"
 AUTH_DB_USER="auth_user"

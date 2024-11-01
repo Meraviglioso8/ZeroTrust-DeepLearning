@@ -2,7 +2,10 @@ import os
 import psycopg2
 import pyotp  
 import requests 
-from barbicanclient import client as barbican_client
+import qrcode
+import base64
+from io import BytesIO
+from barbicanclient import client
 from keystoneauth1.identity import v3
 from keystoneauth1 import session
 from dotenv import load_dotenv
@@ -28,6 +31,7 @@ OS_PASSWORD = os.getenv('OS_PASSWORD')
 OS_PROJECT_NAME = os.getenv('OS_PROJECT_NAME')
 OS_USER_DOMAIN_NAME = os.getenv('OS_USER_DOMAIN_NAME')
 OS_PROJECT_DOMAIN_NAME = os.getenv('OS_PROJECT_DOMAIN_NAME')
+BARBICAN_URL = os.getenv('BARBICAN_URL')
 
 # Authenticate with Keystone and create a session for Barbican
 auth = v3.Password(auth_url=OS_AUTH_URL,
@@ -36,9 +40,12 @@ auth = v3.Password(auth_url=OS_AUTH_URL,
                    project_name=OS_PROJECT_NAME,
                    user_domain_name=OS_USER_DOMAIN_NAME,
                    project_domain_name=OS_PROJECT_DOMAIN_NAME)
-print(session.Session(auth=auth))
 sess = session.Session(auth=auth)
-barbican = barbican_client.Client(session=sess)
+barbican = client.Client(session=sess,endpoint=BARBICAN_URL)
+
+print("Auth token:", sess.get_token())
+
+print(barbican)
 
 def get_db_connection():
     try:
@@ -53,6 +60,17 @@ def get_db_connection():
     except Exception as e:
         print(f"Error connecting to PostgreSQL: {e}")
         return None
+
+def generate_totp_uri(email, totp_secret):
+    issuer_name = "ZERO-TRUST"  # Replace with your app's name
+    return f"otpauth://totp/{issuer_name}:{email}?secret={totp_secret}&issuer={issuer_name}"
+
+def generate_qr_code(uri):
+    qr = qrcode.make(uri)
+    buffer = BytesIO()
+    qr.save(buffer, format="PNG")
+    qr_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return qr_base64  # This can be sent as a base64-encoded string
 
 # Helper functions for user handling
 def is_duplicate(email: str):
@@ -77,25 +95,30 @@ def find_user_by_email(email: str):
 
 def insert_user(email: str, password_hash: str, permissions: List[str], totp_secret: str):
     # Store the TOTP secret in Barbican
-    secret_ref = store_secret_in_barbican(totp_secret)
+    
     
     # Insert user into the database without storing the TOTP secret
     conn = get_db_connection()
     cursor = conn.cursor()
-    query = "INSERT INTO users (email, password, permissions, totp_secret_ref) VALUES (%s, %s, %s, %s) RETURNING id"
-    cursor.execute(query, (email, password_hash, permissions, secret_ref))
+    query = "INSERT INTO users (email, password, permissions) VALUES (%s, %s, %s) RETURNING id"
+    cursor.execute(query, (email, password_hash, permissions))
     conn.commit()
     user_id = cursor.fetchone()[0]
     cursor.close()
     conn.close()
+    store_secret_in_barbican(user_id, totp_secret)
     return user_id
 
 # Function to store secret in Barbican
-def store_secret_in_barbican(secret: str) -> str:
+def store_secret_in_barbican(userid: str, secret: str) -> str:
     # Create a new secret in Barbican
-    new_secret = barbican.secrets.create(name="TOTP Secret", payload=secret, payload_content_type='text/plain')
-    secret_ref = new_secret.store()  # Store the secret and get the reference
-    return secret_ref
+    try:
+        new_secret = barbican.secrets.create()
+        new_secret.name = u'Random plain text password for user {}'.format(userid)
+        new_secret.payload = secret
+        new_secret.store()
+    except Exception as e:
+        print("Error during signup 111:", e)
 
 # Function to retrieve the TOTP secret from Barbican
 def retrieve_secret_from_barbican(secret_ref: str) -> str:
