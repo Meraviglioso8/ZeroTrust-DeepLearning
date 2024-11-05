@@ -3,53 +3,58 @@ from flask_sqlalchemy import SQLAlchemy
 from strawberry.flask.views import GraphQLView
 import strawberry
 import jwt
-import requests
 from config import Config
 from typing import List, Optional
 from flask_migrate import Migrate
 from functools import wraps
+from flask_cors import CORS
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
 
-# def request_token_from_authorization(user_id, permissions):
-#     url = Config.AUTHORIZATION_URL
-#     payload = {"user_id": user_id, "permissions": permissions}
-#     response = requests.post(url, json=payload)
-#     if response.status_code == 200:
-#         return response.json().get("token")
-#     return None
+@app.before_request
+def before_request():
+    try:
+        if request.method != 'OPTIONS':
+            print("Before request called")
+            print("Request Headers:", request.headers)
+            token = request.headers.get('Authorization')
+            print("Authorization Header:", token)
+            if token:
+                token = token.split(" ")[1]
+                print("Token found:", token)  
+                try:
+                    payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+                    print("Decoded payload:", payload)
+                    g.user = payload
+                except jwt.ExpiredSignatureError:
+                    return jsonify({"error": "Token expired"}), 401
+                except jwt.InvalidTokenError:
+                    return jsonify({"error": "Invalid token"}), 401
+            else:
+                print("No token found")
+                g.user = None
+    except Exception as e:
+        return "401 Unauthorized\n{}\n\n".format(e), 401
 
-def token_verification_middleware(app):
-    @app.before_request
-    def verify_jwt_token():
-        token = request.headers.get('Authorization')
-        if token:
-            token = token.split(" ")[1]  
-            try:
-                payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
-                g.user = payload 
-            except jwt.ExpiredSignatureError:
-                return jsonify({"error": "Token expired"}), 401
-            except jwt.InvalidTokenError:
-                return jsonify({"error": "Invalid token"}), 401
-        else:
-            g.user = None
-
-token_verification_middleware(app)
-
+       
 def require_permissions(allowed_permissions):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            user = g.get('user')
+            user = g.get('user') 
+            print("User in require_permissions:", user)  
             if not user or not set(user.get('permissions', [])).intersection(allowed_permissions):
+                print("Unauthorized access")  
                 raise Exception("Unauthorized access")
             return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
 
 class Product(db.Model):
     __tablename__ = 'products'
@@ -123,21 +128,7 @@ class Query:
                     ratings=[RatingType(id=rating.id, score=rating.score, product_id=rating.product_id) for rating in product.ratings]
                 ) for product in products
             ]
-    
-    @strawberry.field
-    @require_permissions(['admin'])
-    def all_orders(self) -> List[OrderType]:
-        with app.app_context():
-            orders = Order.query.all()
-            return [
-                OrderType(
-                    id=order.id,
-                    quantity=order.quantity,
-                    total_price=order.total_price,
-                    product_id=order.product_id
-                ) for order in orders
-            ]
-    
+
     @strawberry.field
     def order(self, id: int) -> Optional[OrderType]:
         with app.app_context():
@@ -231,6 +222,12 @@ class Mutation:
                 product_id=new_order.product_id
             )
 
+class CustomGraphQLView(GraphQLView):
+    def get_context(self, request, response=None) -> dict:
+        context = super().get_context(request, response)
+        context['token'] = g.get('user') 
+        return context
+
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
 # app context fucking shiet
@@ -242,8 +239,9 @@ with app.app_context():
 
 app.add_url_rule(
     '/graphql',
-    view_func=GraphQLView.as_view('graphql_view', schema=schema, context_getter=lambda: {"token": g.user})
+    view_func=CustomGraphQLView.as_view('graphql_view', schema=schema)
 )
+
 
 if __name__ == '__main__':
     app.run(debug=True)
