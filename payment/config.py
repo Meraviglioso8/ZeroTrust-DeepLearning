@@ -6,4 +6,4 @@ class Config:
     PAYPAL_MODE = 'sandbox'
     PRODUCT_SERVICE_URL = 'http://localhost:8000/graphql'
     SECRET_KEY = ''
-    AUTHORIZATION_URL = 'http://localhost:5001/generate-token'
+    
