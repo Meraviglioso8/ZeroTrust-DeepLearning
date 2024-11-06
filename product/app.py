@@ -1,15 +1,60 @@
-from flask import Flask, current_app
+from flask import Flask, current_app, request, g, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from strawberry.flask.views import GraphQLView
 import strawberry
+import jwt
 from config import Config
 from typing import List, Optional
 from flask_migrate import Migrate
+from functools import wraps
+from flask_cors import CORS
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
+
+@app.before_request
+def before_request():
+    try:
+        if request.method != 'OPTIONS':
+            print("Before request called")
+            print("Request Headers:", request.headers)
+            token = request.headers.get('Authorization')
+            print("Authorization Header:", token)
+            if token:
+                token = token.split(" ")[1]
+                print("Token found:", token)  
+                try:
+                    payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+                    print("Decoded payload:", payload)
+                    g.user = payload
+                except jwt.ExpiredSignatureError:
+                    return jsonify({"error": "Token expired"}), 401
+                except jwt.InvalidTokenError:
+                    return jsonify({"error": "Invalid token"}), 401
+            else:
+                print("No token found")
+                g.user = None
+    except Exception as e:
+        return "401 Unauthorized\n{}\n\n".format(e), 401
+
+       
+def require_permissions(allowed_permissions):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = g.get('user') 
+            print("User in require_permissions:", user)  
+            if not user or not set(user.get('permissions', [])).intersection(allowed_permissions):
+                print("Unauthorized access")  
+                raise Exception("Unauthorized access")
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 
 class Product(db.Model):
     __tablename__ = 'products'
@@ -115,6 +160,7 @@ class Query:
 @strawberry.type
 class Mutation:
     @strawberry.mutation
+    @require_permissions(['admin'])
     def add_product(self, name: str, description: str, price: float) -> ProductType:
         with app.app_context():
             new_product = Product(name=name, description=description, price=price)
@@ -130,6 +176,7 @@ class Mutation:
             )
 
     @strawberry.mutation
+    @require_permissions(['admin'])
     def remove_product(self, id: int) -> bool:
         with app.app_context():
             product = Product.query.get(id)
@@ -175,6 +222,12 @@ class Mutation:
                 product_id=new_order.product_id
             )
 
+class CustomGraphQLView(GraphQLView):
+    def get_context(self, request, response=None) -> dict:
+        context = super().get_context(request, response)
+        context['token'] = g.get('user') 
+        return context
+
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
 # app context fucking shiet
@@ -186,8 +239,9 @@ with app.app_context():
 
 app.add_url_rule(
     '/graphql',
-    view_func=GraphQLView.as_view('graphql_view', schema=schema)
+    view_func=CustomGraphQLView.as_view('graphql_view', schema=schema)
 )
+
 
 if __name__ == '__main__':
     app.run(debug=True)

@@ -1,15 +1,55 @@
-import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, requests, g
 from flask_sqlalchemy import SQLAlchemy
 import paypalrestsdk
 from strawberry.flask.views import GraphQLView
 import strawberry
+import jwt
 from config import Config
 from typing import List, Optional
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
+
+
+@app.before_request
+def before_request():
+    try:
+        if request.method != 'OPTIONS':
+            print("Before request called")
+            print("Request Headers:", request.headers)
+            token = request.headers.get('Authorization')
+            print("Authorization Header:", token)
+            if token:
+                token = token.split(" ")[1]
+                print("Token found:", token)  
+                try:
+                    payload = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+                    print("Decoded payload:", payload)
+                    g.user = payload
+                except jwt.ExpiredSignatureError:
+                    return jsonify({"error": "Token expired"}), 401
+                except jwt.InvalidTokenError:
+                    return jsonify({"error": "Invalid token"}), 401
+            else:
+                print("No token found")
+                g.user = None
+    except Exception as e:
+        return "401 Unauthorized\n{}\n\n".format(e), 401
+
+       
+def require_permissions(allowed_permissions):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = g.get('user') 
+            print("User in require_permissions:", user)  
+            if not user or not set(user.get('permissions', [])).intersection(allowed_permissions):
+                print("Unauthorized access")  
+                raise Exception("Unauthorized access")
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 paypalrestsdk.configure({
     "mode": app.config["PAYPAL_MODE"],
@@ -93,11 +133,17 @@ class Mutation:
 
             return "Error: PayPal approval URL not found"
 
+class CustomGraphQLView(GraphQLView):
+    def get_context(self, request, response=None) -> dict:
+        context = super().get_context(request, response)
+        context['token'] = g.get('user') 
+        return context
+
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
 app.add_url_rule(
     '/graphql',
-    view_func=GraphQLView.as_view('graphql_view', schema=schema)
+    view_func=CustomGraphQLView.as_view('graphql_view', schema=schema)
 )
 
 with app.app_context():
