@@ -1,9 +1,10 @@
-from flask import Flask, jsonify, requests, g
+from flask import Flask, jsonify, request, g
 from flask_sqlalchemy import SQLAlchemy
 import paypalrestsdk
 from strawberry.flask.views import GraphQLView
 import strawberry
 import jwt
+import requests
 from config import Config
 from typing import List, Optional
 
@@ -109,7 +110,7 @@ def process_paypal_payment(order_total: float) -> dict:
 @strawberry.type
 class Query:
     with app.app_context():
-        hello: str = "Nothing just an inchident, on the race."
+        hello: str = "Hello, this is a placeholder query."
 
 @strawberry.type
 class Mutation:
@@ -132,12 +133,13 @@ class Mutation:
                     return link['href']
 
             return "Error: PayPal approval URL not found"
-
+        
 class CustomGraphQLView(GraphQLView):
     def get_context(self, request, response=None) -> dict:
         context = super().get_context(request, response)
         context['token'] = g.get('user') 
         return context
+
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
@@ -145,6 +147,7 @@ app.add_url_rule(
     '/graphql',
     view_func=CustomGraphQLView.as_view('graphql_view', schema=schema)
 )
+
 
 with app.app_context():
     db.create_all()
