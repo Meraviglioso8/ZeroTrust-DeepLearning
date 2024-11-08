@@ -43,10 +43,6 @@ auth = v3.Password(auth_url=OS_AUTH_URL,
 sess = session.Session(auth=auth)
 barbican = client.Client(session=sess,endpoint=BARBICAN_URL)
 
-print("Auth token:", sess.get_token())
-
-print(barbican)
-
 def get_db_connection():
     try:
         conn = psycopg2.connect(
@@ -83,25 +79,78 @@ def is_duplicate(email: str):
     conn.close()
     return result is not None
 
+def find_user_hashed_password_by_email(email: str):
+    try:
+        # Establish a connection to the database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Execute the query to fetch only the hashed password by email
+        query = "SELECT password FROM users WHERE email = %s"
+        cursor.execute(query, (email,))
+        
+        # Fetch the hashed password
+        result = cursor.fetchone()
+        
+        # Close the cursor and connection
+        cursor.close()
+        conn.close()
+        
+        # Return the hashed password if found, else return None or a message
+        if result:
+            return result[0]  # return only the `password` field
+        else:
+            return None  # or "User not found"
+    
+    except Exception as e:
+        print(f"Error during query: {e}")
+        return None
+
+
+def find_id_by_email(email: str):
+    try:
+        # Establish a connection to the database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Execute the query to fetch the user by email
+        query = "SELECT id FROM users WHERE email = %s"
+        cursor.execute(query, (email,))
+        
+        # Fetch the user data
+        result = cursor.fetchone()
+        
+        # Close the cursor and connection
+        cursor.close()
+        conn.close()
+        
+        # Return the userid if found, else return None or a message
+        if result:
+            return result[0]  # return only the `id` field
+        else:
+            return None  # or "User not found"
+    
+    except Exception as e:
+        print(f"Error during query: {e}")
+        return None
+
 def find_user_by_email(email: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    query = "SELECT id, email, password, permissions FROM users WHERE email = %s"
+    query = "SELECT id, email, password FROM users WHERE email = %s"
     cursor.execute(query, (email,))
     user = cursor.fetchone()
     cursor.close()
     conn.close()
     return user
 
-def insert_user(email: str, password_hash: str, permissions: List[str], totp_secret: str):
-    # Store the TOTP secret in Barbican
-    
-    
+
+def insert_user(email: str, password_hash: str, totp_secret: str):
     # Insert user into the database without storing the TOTP secret
     conn = get_db_connection()
     cursor = conn.cursor()
-    query = "INSERT INTO users (email, password, permissions) VALUES (%s, %s, %s) RETURNING id"
-    cursor.execute(query, (email, password_hash, permissions))
+    query = "INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id"
+    cursor.execute(query, (email, password_hash))
     conn.commit()
     user_id = cursor.fetchone()[0]
     cursor.close()
@@ -118,20 +167,37 @@ def store_secret_in_barbican(userid: str, secret: str) -> str:
         new_secret.payload = secret
         new_secret.store()
     except Exception as e:
-        print("Error during signup 111:", e)
+        print("Error during store secret:", e)
+        
 
 # Function to retrieve the TOTP secret from Barbican
-def retrieve_secret_from_barbican(secret_ref: str) -> str:
-    secret = barbican.secrets.get(secret_ref)
-    return secret.payload  # Get the payload (secret value)
+
+def query_secret_by_userid(userid: str) -> str:
+    try:
+        # Retrieve a list of secrets
+        secrets = barbican.secrets.list()
+
+        # Filter secrets by user ID in the name or metadata
+        for secret in secrets:
+            if secret.name == f'Random plain text password for user {userid}':
+                # Retrieve and return the secret payload
+                return secret.payload
+
+        return "Secret not found for the given user ID."
+
+    except Exception as e:
+        print("Error during secret retrieval:", e)
+        return "Failed to retrieve the secret."
+
 
 # TOTP Functions for 2FA
 def generate_totp_secret():
     return pyotp.random_base32()
 
-def verify_totp(secret_ref: str, totp_code: str):
+def verify_totp(email: str, totp_code: str):
     # Retrieve the TOTP secret from Barbican
-    totp_secret = retrieve_secret_from_barbican(secret_ref)
+    userId = find_id_by_email(email)
+    totp_secret = query_secret_by_userid(userId)
     totp = pyotp.TOTP(totp_secret)
     return totp.verify(totp_code)
 
