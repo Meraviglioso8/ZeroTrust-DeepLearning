@@ -11,13 +11,14 @@ WORKDIR /authentication-service
 COPY requirements.txt .
 
 # Install Python dependencies
+
 RUN pip install -r requirements.txt
 
 # Copy the rest of the application code
 COPY . /authentication-service
 
 # Expose the port that the Strawberry app will run on
-EXPOSE 5000
+EXPOSE 5001
 
 # Run the Strawberry app using uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5001"]
