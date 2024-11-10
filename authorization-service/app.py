@@ -5,56 +5,82 @@ import base64
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
-from starlette.routing import Route
+from strawberry.asgi import GraphQL
+import strawberry
+from typing import Optional, List
+from helper import *
 
-# Load environment variables from .env
-load_dotenv()
+# Define GraphQL UserType
+@strawberry.type
+class UserType:
+    info: str
+    token: Optional[str] = None
 
-# Redis connection details
-redis_client = redis.StrictRedis(host=os.getenv("REDIS_HOST"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+# Define GraphQL PermissionsType
+@strawberry.type
+class PermissionsType:
+    info: str
+    permissions: Optional[List[str]] = None
 
-# JWT secret and public keys
-SECRET_KEY = os.getenv('SECRET_KEY')
+# Define GraphQL Queries
+@strawberry.type
+class Query:
+    @strawberry.field
+    def placeholder(self) -> str:
+        return "This is a placeholder query."
 
-# Helper function to generate JWT token
-def generate_jwt_token(user_id: str, permissions: list, expiration_minutes=15):
-    expiration_time = datetime.utcnow() + timedelta(minutes=expiration_minutes)
-    payload = {
-        "sub": user_id,
-        "permissions": permissions,
-        "exp": expiration_time
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+# Define GraphQL Mutations
+@strawberry.type
+class Mutation:
+    @strawberry.mutation
+    def create_token(self, user_id: str, permissions: List[str], expiration_minutes: int = 15) -> UserType:
+        try:
+            # Generate JWT token with the specified permissions and expiration
+            token = generate_jwt_token(user_id, permissions, expiration_minutes)
+            set_session(token)  # Store session in Redis
+            return UserType(info="Token created successfully", token=token)
 
-# Session management
-def set_session(token: str):
-    payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    session_id = base64.b64encode(os.urandom(24)).decode('utf-8')
-    redis_client.hset(session_id, "access_token", token)
-    redis_client.expire(session_id, timedelta(minutes=15))
-    return session_id
+        except Exception as e:
+            print(f"Error during token creation: {e}")
+            return UserType(info="Failed to create token")
 
-# Route to generate the token
-async def generate_token_route(request):
-    data = await request.json()
-    user_id = data.get('user_id')
-    permissions = data.get('permissions')
+    @strawberry.mutation
+    def add_permission(self, user_id: str, permission: str) -> PermissionsType:
+        try:
+            # Retrieve and update permissions for the user
+            permissions = redis_client.hget(user_id, "permissions") or []
+            if permission not in permissions:
+                permissions.append(permission)
+                redis_client.hset(user_id, "permissions", permissions)
 
-    if not user_id or not permissions:
-        return JSONResponse({"error": "Invalid request"}, status_code=400)
+            return PermissionsType(info="Permission added successfully", permissions=permissions)
 
-    # Generate the JWT token
-    token = generate_jwt_token(user_id, permissions)
+        except Exception as e:
+            print(f"Error adding permission: {e}")
+            return PermissionsType(info="Failed to add permission")
 
-    # Optionally, store session in Redis
-    set_session(token)
+    @strawberry.mutation
+    def remove_permission(self, user_id: str, permission: str) -> PermissionsType:
+        try:
+            # Retrieve and update permissions for the user
+            permissions = redis_client.hget(user_id, "permissions") or []
+            if permission in permissions:
+                permissions.remove(permission)
+                redis_client.hset(user_id, "permissions", permissions)
 
-    return JSONResponse({"token": token})
+            return PermissionsType(info="Permission removed successfully", permissions=permissions)
 
-# Starlette app setup
+        except Exception as e:
+            print(f"Error removing permission: {e}")
+            return PermissionsType(info="Failed to remove permission")
+
+# Create GraphQL schema
+schema = strawberry.Schema(query=Query, mutation=Mutation)
+
+# Starlette ASGI app setup
 app = Starlette(debug=True)
-app.add_route("/generate-token", generate_token_route, methods=["POST"])
+graphql_app = GraphQL(schema)
+app.add_route("/authorization", graphql_app)
 
 # Main entry point
 if __name__ == "__main__":
