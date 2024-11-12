@@ -1,80 +1,102 @@
 import os
-import jwt
-import redis
-import base64
-import hashlib
-import uuid
-from datetime import datetime, timedelta, timezone
+import psycopg2
+from psycopg2 import pool
 from dotenv import load_dotenv
 from typing import List
+import re
+import logging
 
-# Load environment variables from .env
+# Load environment variables
 load_dotenv()
 
-# Redis connection details
-redis_client = redis.StrictRedis(host=os.getenv("REDIS_HOST"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+# PostgreSQL connection details
+POSTGRES_USER = os.getenv('POSTGRES_USER')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
+POSTGRES_DB = os.getenv('POSTGRES_DB')
+POSTGRES_HOST = os.getenv('POSTGRES_HOST')
+POSTGRES_PORT = os.getenv('POSTGRES_PORT')
+SSL_MODE = os.getenv('SSL_MODE', 'require')  # Set SSL_MODE to 'require' for production
 
-# JWT secret key
-SECRET_KEY = os.getenv('SECRET_KEY')
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
-# Helper function to generate JWT token
-def generate_access_token(user_id: str, permissions: List[str], expiration_minutes=15, issuer="zerotrust") -> str:
+# Establish a PostgreSQL connection pool
+try:
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        1, 10,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        sslmode=SSL_MODE
+    )
+    if db_pool:
+        logging.info("PostgreSQL connection pool created successfully")
+except Exception as e:
+    logging.error(f"Error creating PostgreSQL connection pool: {e}")
+
+# Database connection helper functions
+def get_db_connection():
     try:
-        # Define the token's issued, expiration, and 'not before' time
-        issued_at = datetime.now(timezone.utc)
-        expiration_time = issued_at + timedelta(minutes=expiration_minutes)
-        not_before = issued_at  # Token is valid immediately upon issuance
-
-        # Generate a unique identifier for the token to prevent replay attacks
-        jwt_id = str(uuid.uuid4())
-
-        # Construct payload with additional standard claims and unique ID
-        payload = {
-            "sub": user_id,
-            "permissions": permissions,
-            "iat": issued_at,
-            "nbf": not_before,
-            "exp": expiration_time,
-            "iss": issuer,          # Token issuer for zero-trust verification
-            "jti": jwt_id           # Unique token ID (JWT ID) for replay protection
-        }
-
-        # Encode token
-        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-        return token
+        return db_pool.getconn()
     except Exception as e:
-        print("Error generating access token:", e)
-        return ""
+        logging.error(f"Error getting connection from pool: {e}")
+        return None
 
-# Session management function
-def set_session(token: str) -> str:
+def release_db_connection(conn):
     try:
-        # Decode and verify token
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        
-        # Ensure token's expiration and validity
-        current_time = datetime.now(timezone.utc)
-        if 'exp' in payload and datetime.fromtimestamp(payload['exp'], tz=timezone.utc) < current_time:
-            raise ValueError("Token has expired")
-        if 'nbf' in payload and datetime.fromtimestamp(payload['nbf'], tz=timezone.utc) > current_time:
-            raise ValueError("Token is not yet valid")
-
-        # Generate a secure session_id using a hash to prevent exposure
-        raw_session_id = base64.b64encode(os.urandom(24)).decode('utf-8')
-        session_id = hashlib.sha256(raw_session_id.encode()).hexdigest()
-
-        # Store session with token in Redis, hashed and with restricted access
-        redis_client.hset(session_id, "access_token", token)
-        
-        # Set session expiration to align with the token's expiration or max 15 mins
-        session_duration = min(15, (payload['exp'] - int(current_time.timestamp())) // 60)
-        redis_client.expire(session_id, timedelta(minutes=session_duration))
-
-        return session_id
-    except jwt.ExpiredSignatureError:
-        print("Error: Token has expired.")
-    except jwt.InvalidTokenError:
-        print("Error: Invalid token.")
+        if conn:
+            db_pool.putconn(conn)
     except Exception as e:
-        print(f"Error setting session: {e}")
-    return ""
+        logging.error(f"Error releasing connection back to pool: {e}")
+
+# Validate user_id input
+def is_valid_user_id(user_id: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z0-9_-]{1,50}$", user_id))
+
+# Database helper functions
+def get_permissions(user_id: str) -> List[str]:
+    if not is_valid_user_id(user_id):
+        logging.error("Invalid user ID format.")
+        raise ValueError("Invalid user ID format.")
+
+    conn = get_db_connection()
+    permissions = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT permissions FROM permissions WHERE user_id = %s", (user_id,))
+            result = cur.fetchone()
+            if result:
+                permissions = result[0].split(',')
+        logging.info(f"Permissions retrieved for user {user_id}: {permissions}")
+        return permissions
+    except Exception as e:
+        logging.error(f"Error retrieving permissions for user {user_id}: {e}")
+        raise
+    finally:
+        if conn:
+            release_db_connection(conn)
+
+def set_permissions(user_id: str, permissions: List[str]):
+    if not is_valid_user_id(user_id):
+        logging.error("Invalid user ID format.")
+        raise ValueError("Invalid user ID format.")
+
+    permissions_str = ','.join(permissions)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO permissions (user_id, permissions)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET permissions = EXCLUDED.permissions
+            """, (user_id, permissions_str))
+            conn.commit()
+        logging.info(f"Permissions set for user {user_id}: {permissions}")
+    except Exception as e:
+        logging.error(f"Error setting permissions for user {user_id}: {e}")
+        raise
+    finally:
+        if conn:
+            release_db_connection(conn)

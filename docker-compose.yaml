@@ -2,17 +2,17 @@ version: '3'
 
 services:
   # PostgreSQL for Keystone
-  postgres_keystone:
+  postgres_autho:
     image: postgres:13
-    container_name: postgres_keystone
+    container_name: postgres_autho
     environment:
-      POSTGRES_USER: keystone
-      POSTGRES_PASSWORD: keystonepass
-      POSTGRES_DB: keystone_db
+      POSTGRES_USER: autho_user
+      POSTGRES_PASSWORD: autho_pass
+      POSTGRES_DB: autho_db
     ports:
       - "5432:5432"  # Keystone DB exposed on 5432
     volumes:
-      - pgdata_keystone:/var/lib/postgresql/data
+      - pgdata_auth:/var/lib/postgresql/data
     networks:
       - openstack
 

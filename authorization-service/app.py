@@ -1,20 +1,11 @@
 import os
-import jwt
-import redis
-import base64
-from datetime import datetime, timedelta
+import psycopg2
 from dotenv import load_dotenv
 from starlette.applications import Starlette
 from strawberry.asgi import GraphQL
 import strawberry
 from typing import Optional, List
 from helper import *
-
-# Define GraphQL UserType
-@strawberry.type
-class UserType:
-    info: str
-    token: Optional[str] = None
 
 # Define GraphQL PermissionsType
 @strawberry.type
@@ -29,32 +20,19 @@ class Query:
     def placeholder(self) -> str:
         return "This is a placeholder query."
 
+
 # Define GraphQL Mutations
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def create_token(self, user_id: str, permissions: List[str], expiration_minutes: int = 15) -> UserType:
-        try:
-            # Generate JWT token with the specified permissions and expiration
-            token = generate_jwt_token(user_id, permissions, expiration_minutes)
-            set_session(token)  # Store session in Redis
-            return UserType(info="Token created successfully", token=token)
-
-        except Exception as e:
-            print(f"Error during token creation: {e}")
-            return UserType(info="Failed to create token")
-
-    @strawberry.mutation
     def add_permission(self, user_id: str, permission: str) -> PermissionsType:
         try:
-            # Retrieve and update permissions for the user
-            permissions = redis_client.hget(user_id, "permissions") or []
+            permissions = get_permissions(user_id)
             if permission not in permissions:
                 permissions.append(permission)
-                redis_client.hset(user_id, "permissions", permissions)
+                set_permissions(user_id, permissions)
 
             return PermissionsType(info="Permission added successfully", permissions=permissions)
-
         except Exception as e:
             print(f"Error adding permission: {e}")
             return PermissionsType(info="Failed to add permission")
@@ -62,17 +40,24 @@ class Mutation:
     @strawberry.mutation
     def remove_permission(self, user_id: str, permission: str) -> PermissionsType:
         try:
-            # Retrieve and update permissions for the user
-            permissions = redis_client.hget(user_id, "permissions") or []
+            permissions = get_permissions(user_id)
             if permission in permissions:
                 permissions.remove(permission)
-                redis_client.hset(user_id, "permissions", permissions)
+                set_permissions(user_id, permissions)
 
             return PermissionsType(info="Permission removed successfully", permissions=permissions)
-
         except Exception as e:
             print(f"Error removing permission: {e}")
             return PermissionsType(info="Failed to remove permission")
+
+    @strawberry.mutation
+    def change_permissions(self, user_id: str, new_permissions: List[str]) -> PermissionsType:
+        try:
+            set_permissions(user_id, new_permissions)
+            return PermissionsType(info="Permissions updated successfully", permissions=new_permissions)
+        except Exception as e:
+            print(f"Error updating permissions: {e}")
+            return PermissionsType(info="Failed to update permissions")
 
 # Create GraphQL schema
 schema = strawberry.Schema(query=Query, mutation=Mutation)
