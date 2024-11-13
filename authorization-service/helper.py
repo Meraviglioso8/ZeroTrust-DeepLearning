@@ -15,7 +15,6 @@ POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
 POSTGRES_DB = os.getenv('POSTGRES_DB')
 POSTGRES_HOST = os.getenv('POSTGRES_HOST')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT')
-SSL_MODE = os.getenv('SSL_MODE', 'require')  # Set SSL_MODE to 'require' for production
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +28,6 @@ try:
         password=POSTGRES_PASSWORD,
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
-        sslmode=SSL_MODE
     )
     if db_pool:
         logging.info("PostgreSQL connection pool created successfully")

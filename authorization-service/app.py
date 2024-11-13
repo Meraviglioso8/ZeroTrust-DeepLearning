@@ -70,4 +70,4 @@ app.add_route("/authorization", graphql_app)
 # Main entry point
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5001)
+    uvicorn.run(app, host="0.0.0.0", port=5002)
