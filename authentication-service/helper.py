@@ -9,7 +9,7 @@ from barbicanclient import client
 from keystoneauth1.identity import v3
 from keystoneauth1 import session
 from dotenv import load_dotenv
-from typing import List
+from typing import Optional, List
 
 # Load environment variables
 load_dotenv()
@@ -107,7 +107,7 @@ def find_user_hashed_password_by_email(email: str):
         return None
 
 
-def find_id_by_email(email: str):
+def find_user_id_by_email(email: str):
     try:
         # Establish a connection to the database
         conn = get_db_connection()
@@ -133,16 +133,51 @@ def find_id_by_email(email: str):
     except Exception as e:
         print(f"Error during query: {e}")
         return None
+    
 
-def find_user_by_email(email: str):
+
+def request_token_from_authorization_service(user_id: str) -> Optional[str]:
+    try:
+        # Example payload to authorization service
+        payload = {
+            "query": """
+            mutation {
+                add_permission(userId: "%s", permission: "login") {
+                    info
+                    permissions
+                }
+            }
+            """ % user_id
+        }
+
+        # Call the authorization service
+        response = requests.post("http://localhost:5002/authorization", json=payload)
+        response_data = response.json()
+
+        # Check if the token generation succeeded
+        if response.status_code == 200 and response_data.get("data"):
+
+            return response_data["data"]["add_permission"]["info"]  # Or adjust based on response schema
+        else:
+            print("Failed to retrieve token:", response_data)
+            return None
+    except Exception as e:
+        print(f"Error connecting to authorization service: {e}")
+        return None
+
+
+def find_id_by_email(email: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    query = "SELECT id, email, password FROM users WHERE email = %s"
+    query = "SELECT id FROM users WHERE email = %s"
     cursor.execute(query, (email,))
-    user = cursor.fetchone()
+    user = cursor.fetchone()  # Fetch one row from the result
     cursor.close()
     conn.close()
-    return user
+
+    # Return only the id if a user is found
+    return user[0] if user else None
+
 
 
 def insert_user(email: str, password_hash: str, totp_secret: str):
@@ -198,6 +233,7 @@ def verify_totp(email: str, totp_code: str):
     # Retrieve the TOTP secret from Barbican
     userId = find_id_by_email(email)
     totp_secret = query_secret_by_userid(userId)
+    
     totp = pyotp.TOTP(totp_secret)
     return totp.verify(totp_code)
 

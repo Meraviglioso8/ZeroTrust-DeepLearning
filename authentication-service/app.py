@@ -70,34 +70,38 @@ class Mutation:
             if not stored_password_hash:
                 return UserType(info="User does not exist")
 
-
             # Verify password
             if not check_password_hash(stored_password_hash, password):
                 return UserType(info="Invalid credentials")
-
+   
             # Verify TOTP code
             if not verify_totp(email, totp_code):
                 return UserType(info="Invalid TOTP code")
+     
+            # Fetch user ID
+            user_id = find_user_id_by_email(email)
+            if not user_id:
+                return UserType(info="User ID not found")
 
             # Request the token from the authorization service
-            #token = request_token_from_authorization(user_id)
+            token = request_token_from_authorization_service(user_id)
 
-            #if token:
-                #return UserType(info="Login Success", token=token)
-            if 1:
-                return UserType(info="Login Success")
+            if token:
+                return UserType(info="Login Success", token=token)
             else:
                 return UserType(info="Login failed: Unable to generate token")
         
+
         except Exception as e:
             print(f"Error during login: {e}")
             return UserType(info="Try again later")
+
 
     @strawberry.mutation
     def get_qr_code(self, email: str) -> UserType:
         try:
             # Retrieve user and their TOTP secret
-            user = find_user_by_email(email)
+            user = find_user_id_by_email(email)
             if not user:
                 return UserType(info="User does not exist")
 
