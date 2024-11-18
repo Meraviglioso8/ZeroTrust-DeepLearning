@@ -31,37 +31,40 @@ class Query:
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def signup(self, email: str, password: str) -> UserType:
+    async def signup(self, email: str, password: str) -> UserType:
         try:
-            # Check for duplicate email
-            if is_duplicate(email):
+            print(f"Starting signup process for email: {email}")
+            
+            # Await the is_duplicate function
+            if await is_duplicate(email):
+                print(f"User already exists for email: {email}")
                 return UserType(info="User already exists")
 
             # Generate hashed password and TOTP secret
             password_hash = generate_password_hash(password)
-            totp_secret = generate_totp_secret()
+            totp_secret = await generate_totp_secret()
 
             # Assign the default role and get permissions
             role = DEFAULT_ROLE
             permissions = PERMISSIONS[role]
 
             # Insert user into the database
-            user_id = insert_user(email, password_hash,totp_secret)
+            user_id = await insert_user(email, password_hash, totp_secret)
 
             if user_id:
                 # Generate TOTP URI and QR code for Google Authenticator
-                totp_uri = generate_totp_uri(email, totp_secret)
-                qr_code_base64 = generate_qr_code(totp_uri)
+                await add_permission_to_user(user_id, permissions)
+                totp_uri = await generate_totp_uri(email, totp_secret)
+                qr_code_base64 = await generate_qr_code(totp_uri)
 
                 # Return signup success message along with QR code
                 return UserType(info="Signup Success", qr_code=qr_code_base64)
             else:
                 return UserType(info="Signup Failed")
-        
+            
         except Exception as e:
             print(f"Error during signup: {e}")
             return UserType(info="Try again later")
-
     @strawberry.mutation
     def login(self, email: str, password: str, totp_code: str) -> UserType:
         try:
@@ -84,7 +87,7 @@ class Mutation:
                 return UserType(info="User ID not found")
 
             # Request the token from the authorization service
-            token = request_token_from_authorization_service(user_id)
+            token = request_token_from_authorization(user_id)
 
             if token:
                 return UserType(info="Login Success", token=token)
@@ -105,10 +108,9 @@ class Mutation:
             if not user:
                 return UserType(info="User does not exist")
 
-            user_id, user_email, stored_password_hash, user_permissions, totp_secret = user
             
             # Generate TOTP URI and QR code for Google Authenticator
-            totp_uri = generate_totp_uri(user_email, totp_secret)
+            totp_uri = generate_totp_uri(email, query_secret_by_userid(user))
             qr_code_base64 = generate_qr_code(totp_uri)
             
             return UserType(info="QR code generated successfully", qr_code=qr_code_base64)

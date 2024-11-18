@@ -1,15 +1,17 @@
 import os
 import psycopg2
 import pyotp  
-import requests 
+import requests
 import qrcode
 import base64
+import aiohttp
 from io import BytesIO
 from barbicanclient import client
 from keystoneauth1.identity import v3
 from keystoneauth1 import session
 from dotenv import load_dotenv
 from typing import Optional, List
+from psycopg2.extras import RealDictCursor
 
 # Load environment variables
 load_dotenv()
@@ -41,212 +43,145 @@ auth = v3.Password(auth_url=OS_AUTH_URL,
                    user_domain_name=OS_USER_DOMAIN_NAME,
                    project_domain_name=OS_PROJECT_DOMAIN_NAME)
 sess = session.Session(auth=auth)
-barbican = client.Client(session=sess,endpoint=BARBICAN_URL)
+barbican = client.Client(session=sess, endpoint=BARBICAN_URL)
 
-def get_db_connection():
+async def get_db_connection():
+    """Establish a database connection."""
     try:
         conn = psycopg2.connect(
             dbname=POSTGRES_DB,
             user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
             host=POSTGRES_HOST,
-            port=POSTGRES_PORT
+            port=POSTGRES_PORT,
+            cursor_factory=RealDictCursor
         )
         return conn
     except Exception as e:
         print(f"Error connecting to PostgreSQL: {e}")
         return None
 
-def generate_totp_uri(email, totp_secret):
+async def generate_totp_uri(email, totp_secret):
     issuer_name = "ZERO-TRUST"  # Replace with your app's name
     return f"otpauth://totp/{issuer_name}:{email}?secret={totp_secret}&issuer={issuer_name}"
 
-def generate_qr_code(uri):
+async def generate_qr_code(uri):
     qr = qrcode.make(uri)
     buffer = BytesIO()
     qr.save(buffer, format="PNG")
     qr_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return qr_base64  # This can be sent as a base64-encoded string
+    return qr_base64
 
 # Helper functions for user handling
-def is_duplicate(email: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    query = "SELECT email FROM users WHERE email = %s"
-    cursor.execute(query, (email,))
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return result is not None
+async def is_duplicate(email: str) -> bool:
+    conn = await get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = "SELECT email FROM users WHERE email = %s"
+            cursor.execute(query, (email,))
+            result = cursor.fetchone()
+            return result is not None
+        finally:
+            conn.close()
 
-def find_user_hashed_password_by_email(email: str):
-    try:
-        # Establish a connection to the database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Execute the query to fetch only the hashed password by email
-        query = "SELECT password FROM users WHERE email = %s"
-        cursor.execute(query, (email,))
-        
-        # Fetch the hashed password
-        result = cursor.fetchone()
-        
-        # Close the cursor and connection
-        cursor.close()
-        conn.close()
-        
-        # Return the hashed password if found, else return None or a message
-        if result:
-            return result[0]  # return only the `password` field
-        else:
-            return None  # or "User not found"
-    
-    except Exception as e:
-        print(f"Error during query: {e}")
-        return None
+async def find_user_hashed_password_by_email(email: str) -> Optional[str]:
+    conn = await get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = "SELECT password FROM users WHERE email = %s"
+            cursor.execute(query, (email,))
+            result = cursor.fetchone()
+            return result["password"] if result else None
+        finally:
+            conn.close()
 
+async def find_user_id_by_email(email: str) -> Optional[int]:
+    conn = await get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = "SELECT id FROM users WHERE email = %s"
+            cursor.execute(query, (email,))
+            result = cursor.fetchone()
+            return result["id"] if result else None
+        finally:
+            conn.close()
 
-def find_user_id_by_email(email: str):
-    try:
-        # Establish a connection to the database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Execute the query to fetch the user by email
-        query = "SELECT id FROM users WHERE email = %s"
-        cursor.execute(query, (email,))
-        
-        # Fetch the user data
-        result = cursor.fetchone()
-        
-        # Close the cursor and connection
-        cursor.close()
-        conn.close()
-        
-        # Return the userid if found, else return None or a message
-        if result:
-            return result[0]  # return only the `id` field
-        else:
-            return None  # or "User not found"
-    
-    except Exception as e:
-        print(f"Error during query: {e}")
-        return None
-    
-
-
-def request_token_from_authorization_service(user_id: str) -> Optional[str]:
-    try:
-        # Example payload to authorization service
-        payload = {
-            "query": """
-            mutation {
-                add_permission(userId: "%s", permission: "login") {
-                    info
-                    permissions
-                }
-            }
-            """ % user_id
-        }
-
-        # Call the authorization service
-        response = requests.post("http://localhost:5002/authorization", json=payload)
-        response_data = response.json()
-
-        # Check if the token generation succeeded
-        if response.status_code == 200 and response_data.get("data"):
-
-            return response_data["data"]["add_permission"]["info"]  # Or adjust based on response schema
-        else:
-            print("Failed to retrieve token:", response_data)
-            return None
-    except Exception as e:
-        print(f"Error connecting to authorization service: {e}")
-        return None
-
-
-def find_id_by_email(email: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    query = "SELECT id FROM users WHERE email = %s"
-    cursor.execute(query, (email,))
-    user = cursor.fetchone()  # Fetch one row from the result
-    cursor.close()
-    conn.close()
-
-    # Return only the id if a user is found
-    return user[0] if user else None
-
-
-
-def insert_user(email: str, password_hash: str, totp_secret: str):
-    # Insert user into the database without storing the TOTP secret
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    query = "INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id"
-    cursor.execute(query, (email, password_hash))
-    conn.commit()
-    user_id = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    store_secret_in_barbican(user_id, totp_secret)
-    return user_id
+async def insert_user(email: str, password_hash: str, totp_secret: str) -> Optional[int]:
+    conn = await get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            query = "INSERT INTO users (email, password) VALUES (%s, %s) RETURNING id"
+            cursor.execute(query, (email, password_hash))
+            user_id = cursor.fetchone()["id"]
+            conn.commit()
+            await store_secret_in_barbican(user_id, totp_secret)
+            return user_id
+        finally:
+            conn.close()
 
 # Function to store secret in Barbican
-def store_secret_in_barbican(userid: str, secret: str) -> str:
-    # Create a new secret in Barbican
+async def store_secret_in_barbican(userid: str, secret: str):
     try:
         new_secret = barbican.secrets.create()
-        new_secret.name = u'Random plain text password for user {}'.format(userid)
+        new_secret.name = f'Random plain text password for user {userid}'
         new_secret.payload = secret
         new_secret.store()
     except Exception as e:
-        print("Error during store secret:", e)
-        
+        print(f"Error during store secret: {e}")
 
 # Function to retrieve the TOTP secret from Barbican
-
-def query_secret_by_userid(userid: str) -> str:
+async def query_secret_by_userid(userid: str) -> Optional[str]:
     try:
-        # Retrieve a list of secrets
         secrets = barbican.secrets.list()
-
-        # Filter secrets by user ID in the name or metadata
         for secret in secrets:
             if secret.name == f'Random plain text password for user {userid}':
-                # Retrieve and return the secret payload
                 return secret.payload
-
-        return "Secret not found for the given user ID."
-
+        return None
     except Exception as e:
-        print("Error during secret retrieval:", e)
-        return "Failed to retrieve the secret."
-
+        print(f"Error during secret retrieval: {e}")
+        return None
 
 # TOTP Functions for 2FA
-def generate_totp_secret():
+async def generate_totp_secret():
     return pyotp.random_base32()
 
-def verify_totp(email: str, totp_code: str):
-    # Retrieve the TOTP secret from Barbican
-    userId = find_id_by_email(email)
-    totp_secret = query_secret_by_userid(userId)
-    
+async def verify_totp(email: str, totp_code: str) -> bool:
+    user_id = await find_user_id_by_email(email)
+    totp_secret = await query_secret_by_userid(user_id)
+    if not totp_secret:
+        return False
     totp = pyotp.TOTP(totp_secret)
     return totp.verify(totp_code)
 
 # Call the authorization service to request token generation
-def request_token_from_authorization(user_id: str, permissions: List[str]):
-    data = {
-        "user_id": user_id,
-        "permissions": permissions
+async def add_permission_to_user(user_id: str, permissions: List[str]) -> Optional[dict]:
+    mutation = """
+    mutation AddPermission($userId: String!, $permissions: [String!]!) {
+        addPermission(userId: $userId, permissions: $permissions) {
+            info
+            permissions
+        }
     }
+    """
+    variables = {
+        "userId": str(user_id),
+        "permissions": permissions  # Ensure this is a list of strings
+    }
+
     try:
-        response = requests.post(f"{AUTHORIZATION_API_URL}/generate-token", json=data)
-        response.raise_for_status()  # Raise an error if status code is not 200
-        return response.json().get('token')  # Extract token from the response
-    except requests.RequestException as e:
-        print(f"Failed to request token from authorization service: {e}")
+        # Send the request
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{AUTHORIZATION_API_URL}/authorization",
+                json={"query": mutation, "variables": variables}
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+    except aiohttp.ClientError as e:
+        print(f"Error sending GraphQL mutation to add permissions: {e}")
         return None
+

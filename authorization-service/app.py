@@ -11,7 +11,7 @@ from helper import *
 @strawberry.type
 class PermissionsType:
     info: str
-    permissions: Optional[List[str]] = None
+    permissions: list[str]  # Updated to handle a list of permissions
 
 # Define GraphQL Queries
 @strawberry.type
@@ -25,39 +25,60 @@ class Query:
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def add_permission(self, user_id: str, permission: str) -> PermissionsType:
+    def add_permission(self, user_id: str, permissions: list[str]) -> PermissionsType:
         try:
-            permissions = get_permissions(user_id)
-            if permission not in permissions:
-                permissions.append(permission)
-                set_permissions(user_id, permissions)
+            # Fetch existing permissions for the user
+            existing_permissions = get_permissions(user_id)
+            print(existing_permissions)
 
-            return PermissionsType(info="Permission added successfully", permissions=permissions)
+            if existing_permissions is None:
+                existing_permissions = []  # Initialize if no permissions exist
+
+            # Add new permissions that are not already in the list
+            for permission in permissions:
+                if permission not in existing_permissions:
+                    existing_permissions.append(permission)
+
+            # Update permissions in the database
+            set_permissions(user_id, existing_permissions)
+
+            return PermissionsType(info="Permissions added successfully", permissions=existing_permissions)
         except Exception as e:
-            print(f"Error adding permission: {e}")
-            return PermissionsType(info="Failed to add permission")
+            print(f"Error adding permissions: {e}")
+            return PermissionsType(info="Failed to add permissions", permissions=[])
 
     @strawberry.mutation
-    def remove_permission(self, user_id: str, permission: str) -> PermissionsType:
+    def remove_permissions(self, user_id: str, permissions: List[str]) -> PermissionsType:
         try:
-            permissions = get_permissions(user_id)
-            if permission in permissions:
-                permissions.remove(permission)
-                set_permissions(user_id, permissions)
+            # Fetch existing permissions for the user
+            existing_permissions = get_permissions(user_id)
+            print(existing_permissions)
 
-            return PermissionsType(info="Permission removed successfully", permissions=permissions)
+            if existing_permissions is None:
+                return PermissionsType(info="No permissions to remove", permissions=[])
+
+            # Remove specified permissions
+            updated_permissions = [perm for perm in existing_permissions if perm not in permissions]
+
+            # Update permissions in the database
+            set_permissions(user_id, updated_permissions)
+
+            return PermissionsType(info="Permissions removed successfully", permissions=updated_permissions)
         except Exception as e:
-            print(f"Error removing permission: {e}")
-            return PermissionsType(info="Failed to remove permission")
-
+            print(f"Error removing permissions: {e}")
+            return PermissionsType(info="Failed to remove permissions", permissions=[])
+        
     @strawberry.mutation
     def change_permissions(self, user_id: str, new_permissions: List[str]) -> PermissionsType:
         try:
+            # Update permissions in the database
             set_permissions(user_id, new_permissions)
             return PermissionsType(info="Permissions updated successfully", permissions=new_permissions)
         except Exception as e:
             print(f"Error updating permissions: {e}")
-            return PermissionsType(info="Failed to update permissions")
+            return PermissionsType(info="Failed to update permissions", permissions=[])
+
+
 
 # Create GraphQL schema
 schema = strawberry.Schema(query=Query, mutation=Mutation)

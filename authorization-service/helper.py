@@ -78,6 +78,7 @@ def get_permissions(user_id: str) -> List[str]:
 
 def set_permissions(user_id: str, permissions: List[str]):
     if not is_valid_user_id(user_id):
+        
         logging.error("Invalid user ID format.")
         raise ValueError("Invalid user ID format.")
 
@@ -98,3 +99,5 @@ def set_permissions(user_id: str, permissions: List[str]):
     finally:
         if conn:
             release_db_connection(conn)
+
+print(get_permissions('13'))
