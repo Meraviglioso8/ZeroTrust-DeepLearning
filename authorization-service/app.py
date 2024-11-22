@@ -1,5 +1,7 @@
 import os
-import psycopg2
+import jwt
+import datetime
+
 from dotenv import load_dotenv
 from starlette.applications import Starlette
 from strawberry.asgi import GraphQL
@@ -7,11 +9,40 @@ import strawberry
 from typing import Optional, List
 from helper import *
 
+load_dotenv()  # Load environment variables
+
+# Define secret and algorithm for JWT
+JWT_SECRET = os.getenv("JWT_SECRET", "your_secret_key")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRES_MINUTES = 1  # Short-lived access tokens
+REFRESH_TOKEN_EXPIRES_DAYS = 2    # Long-lived refresh tokens
+
+
+
+
 # Define GraphQL PermissionsType
 @strawberry.type
 class PermissionsType:
     info: str
-    permissions: list[str]  # Updated to handle a list of permissions
+    permissions: list[str]
+
+
+@strawberry.type
+class PermissionsWithTokenType:
+    info: str
+    token: Optional[str] = None
+    permissions: List[str]
+
+
+# Utility to create JWT
+def create_token(payload: dict, expires_delta: datetime.timedelta) -> str:
+    payload["exp"] = datetime.datetime.utcnow() + expires_delta
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+# Fire-and-Forget Session Creation
+
+
 
 # Define GraphQL Queries
 @strawberry.type
@@ -29,10 +60,8 @@ class Mutation:
         try:
             # Fetch existing permissions for the user
             existing_permissions = get_permissions(user_id)
-            print(existing_permissions)
-
             if existing_permissions is None:
-                existing_permissions = []  # Initialize if no permissions exist
+                existing_permissions = []
 
             # Add new permissions that are not already in the list
             for permission in permissions:
@@ -48,36 +77,70 @@ class Mutation:
             return PermissionsType(info="Failed to add permissions", permissions=[])
 
     @strawberry.mutation
-    def remove_permissions(self, user_id: str, permissions: List[str]) -> PermissionsType:
+    async def authorization_code_grant(self, user_id: str) -> PermissionsWithTokenType:
+        """
+        Initiates the Authorization Code Grant process and responds immediately while session creation
+        happens in the background.
+        """
         try:
-            # Fetch existing permissions for the user
-            existing_permissions = get_permissions(user_id)
-            print(existing_permissions)
+            # Fetch permissions for the user
+            permissions = get_permissions(user_id)
+            if not permissions:
+                return PermissionsWithTokenType(
+                    info="No permissions found for user",
+                    permissions=[],
+                    token=None
+                )
 
-            if existing_permissions is None:
-                return PermissionsType(info="No permissions to remove", permissions=[])
+            # Fire-and-forget session creation
+            await fire_and_forget_session_creation(user_id, permissions)
 
-            # Remove specified permissions
-            updated_permissions = [perm for perm in existing_permissions if perm not in permissions]
-
-            # Update permissions in the database
-            set_permissions(user_id, updated_permissions)
-
-            return PermissionsType(info="Permissions removed successfully", permissions=updated_permissions)
+            # Respond immediately to the client
+            return PermissionsWithTokenType(
+                info="Authorization initiated. Token generation is in progress.",
+                permissions=permissions,
+                token=None
+            )
         except Exception as e:
-            print(f"Error removing permissions: {e}")
-            return PermissionsType(info="Failed to remove permissions", permissions=[])
-        
+            print(f"Error in authorization_code_grant: {e}")
+            return PermissionsWithTokenType(
+                info="Error during authorization",
+                permissions=[],
+                token=None
+            )
+
     @strawberry.mutation
-    def change_permissions(self, user_id: str, new_permissions: List[str]) -> PermissionsType:
+    async def client_credentials_flow(self, client_id: str, client_secret: str) -> PermissionsWithTokenType:
+        """
+        Handles the Client Credentials Flow to generate a JWT for service-to-service communication.
+        """
         try:
-            # Update permissions in the database
-            set_permissions(user_id, new_permissions)
-            return PermissionsType(info="Permissions updated successfully", permissions=new_permissions)
-        except Exception as e:
-            print(f"Error updating permissions: {e}")
-            return PermissionsType(info="Failed to update permissions", permissions=[])
+            # Validate client credentials
+            if not validate_client_credentials(client_id, client_secret):  # Implement this helper function
+                return PermissionsWithTokenType(
+                    info="Invalid client credentials",
+                    permissions=[],
+                    token=None
+                )
 
+            # Create short-lived token for the client
+            access_token = create_token(
+                {"client_id": client_id},
+                expires_delta=datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRES_MINUTES)
+            )
+
+            return PermissionsWithTokenType(
+                info="Client credentials authorization successful",
+                permissions=[],
+                token=access_token
+            )
+        except Exception as e:
+            print(f"Error in client_credentials_flow: {e}")
+            return PermissionsWithTokenType(
+                info="Error during client credentials authorization",
+                permissions=[],
+                token=None
+            )
 
 
 # Create GraphQL schema

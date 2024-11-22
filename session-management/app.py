@@ -1,15 +1,27 @@
 import os
 import jwt
 import redis
-import base64
-import hashlib
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from starlette.applications import Starlette
 from strawberry.asgi import GraphQL
 import strawberry
 from typing import Optional, List
+import asyncio
 from helper import *
+
+# Load environment variables
+load_dotenv()
+
+# Redis setup
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+
+# JWT configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
+ALGORITHM = "HS256"  # Default to HS256 if not specified
+
 
 # Define GraphQL UserType
 @strawberry.type
@@ -17,76 +29,39 @@ class UserType:
     info: str
     token: Optional[str] = None
 
-# Define GraphQL PermissionsType
-@strawberry.type
-class PermissionsType:
-    info: str
-    permissions: Optional[List[str]] = None
-
 # Define GraphQL Queries
 @strawberry.type
 class Query:
     @strawberry.field
-    def placeholder(self) -> str:
-        return "This is a placeholder query."
+    def get_session_token(self, user_id: str) -> UserType:
+        """
+        Fetch the token and session details for a user.
+        """
+        session_data = redis_client.hgetall(user_id)
+        if not session_data:
+            return UserType(info="Session not found")
+        return UserType(info="Session retrieved successfully", token=session_data.get("access_token"))
+    
 
 # Define GraphQL Mutations
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def create_token(self, user_id: str, permissions: List[str], expiration_minutes: int = 15) -> UserType:
-        try:
-            # Generate JWT access token with specified permissions and expiration
-            token = generate_access_token(user_id, permissions, expiration_minutes)
-            set_session(token, user_id)  # Store session in Redis
-            return UserType(info="Token created successfully", token=token)
-
-        except Exception as e:
-            print(f"Error during token creation: {e}")
-            return UserType(info="Failed to create token")
-
-    @strawberry.mutation
-    def add_permission(self, user_id: str, permission: str) -> PermissionsType:
-        try:
-            # Retrieve existing permissions, ensure permission is added
-            permissions = redis_client.hget(user_id, "permissions")
-            if permissions:
-                permissions = permissions.split(',')
-            else:
-                permissions = []
-
-            if permission not in permissions:
-                permissions.append(permission)
-                redis_client.hset(user_id, "permissions", ','.join(permissions))
-
-            return PermissionsType(info="Permission added successfully", permissions=permissions)
-
-        except Exception as e:
-            print(f"Error adding permission: {e}")
-            return PermissionsType(info="Failed to add permission")
-
-    @strawberry.mutation
-    def remove_permission(self, user_id: str, permission: str) -> PermissionsType:
-        try:
-            # Retrieve existing permissions, ensure permission is removed
-            permissions = redis_client.hget(user_id, "permissions")
-            if permissions:
-                permissions = permissions.split(',')
-                if permission in permissions:
-                    permissions.remove(permission)
-                    redis_client.hset(user_id, "permissions", ','.join(permissions))
-
-            return PermissionsType(info="Permission removed successfully", permissions=permissions)
-
-        except Exception as e:
-            print(f"Error removing permission: {e}")
-            return PermissionsType(info="Failed to remove permission")
+    async def create_session(self, user_id: str, permissions: List[str]) -> str:
+        """
+        Asynchronously create a session for a user.
+        """
+        asyncio.create_task(generate_and_notify_session(user_id, permissions))
+        return "Session creation initiated."
 
     @strawberry.mutation
     def refresh_access_token(self, refresh_token: str) -> UserType:
+        """
+        Refresh the access token using a refresh token.
+        """
         try:
             # Decode the refresh token
-            payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=["HS256"])
+            payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
 
             # Check expiration
             current_time = datetime.now(timezone.utc)
@@ -99,15 +74,17 @@ class Mutation:
             permissions = redis_client.hget(user_id, "permissions")
             if permissions:
                 permissions = permissions.split(',')
+            else:
+                return UserType(info="No permissions found")
 
-            # Generate a new access token with a shorter expiration
-            new_access_token = generate_access_token(user_id, permissions, expiration_minutes=15)
-            
-            # Optionally, update session with the new access token
-            set_session(new_access_token, user_id)
+            # Generate a new access token
+            new_access_token = generate_access_token(user_id, permissions)
+
+            # Update session with the new access token
+            asyncio.create_task(set_session_fire_and_forget(new_access_token, lambda t: None))
 
             return UserType(info="Access token refreshed successfully", token=new_access_token)
-        
+
         except jwt.ExpiredSignatureError:
             print("Error: Refresh token has expired.")
             return UserType(info="Failed to refresh access token: Refresh token expired")
@@ -117,20 +94,17 @@ class Mutation:
         except Exception as e:
             print(f"Error refreshing access token: {e}")
             return UserType(info="Failed to refresh access token")
-        
-        
+
+
 # Create GraphQL schema
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
 # Starlette ASGI app setup
 app = Starlette(debug=True)
 graphql_app = GraphQL(schema)
-app.add_route("/authorization", graphql_app)
-
-# Session management function
-
+app.add_route("/session", graphql_app)
 
 # Main entry point
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5001)
+    uvicorn.run(app, host="0.0.0.0", port=5003)

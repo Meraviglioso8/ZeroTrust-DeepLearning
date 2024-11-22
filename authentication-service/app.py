@@ -6,10 +6,19 @@ from starlette.applications import Starlette
 from strawberry.asgi import GraphQL
 
 # Define Roles and Permissions
-PERMISSIONS = {
+ROLES = {
     "admin": ["manage_users", "manage_products", "view_orders", "process_orders"],
     "seller": ["manage_products", "view_orders"],
-    "customer": ["view_products", "place_orders"]
+    "customer": ["view_products", "place_orders"],
+}
+
+PERMISSIONS = {
+    "manage_users": ["create_user", "edit_user", "delete_user", "view_user"],
+    "manage_products": ["add_product", "edit_product", "delete_product", "view_product"],
+    "view_orders": ["list_orders", "view_order_details"],
+    "process_orders": ["update_order_status", "ship_order", "cancel_order"],
+    "view_products": ["list_products", "view_product_details"],
+    "place_orders": ["create_order", "cancel_own_order"],
 }
 
 # Default role for signup
@@ -19,8 +28,14 @@ DEFAULT_ROLE = "customer"
 @strawberry.type
 class UserType:
     info: str
-    qr_code: Optional[str] = None
     token: Optional[str] = None
+    qr_code: Optional[str] = None
+
+@strawberry.type
+class TokenType:
+    info: str
+    token: str
+    permissions: Optional[str] = None
 
 @strawberry.type
 class Query:
@@ -28,96 +43,93 @@ class Query:
     def placeholder(self) -> str:
         return "This is a placeholder query."
 
+
 @strawberry.type
 class Mutation:
     @strawberry.mutation
     async def signup(self, email: str, password: str) -> UserType:
         try:
             print(f"Starting signup process for email: {email}")
-            
-            # Await the is_duplicate function
+
+            # Check if the user already exists
             if await is_duplicate(email):
-                print(f"User already exists for email: {email}")
                 return UserType(info="User already exists")
 
             # Generate hashed password and TOTP secret
             password_hash = generate_password_hash(password)
             totp_secret = await generate_totp_secret()
 
-            # Assign the default role and get permissions
+            # Assign the default role and permissions
             role = DEFAULT_ROLE
-            permissions = PERMISSIONS[role]
+            permissions = ROLES[role]
 
             # Insert user into the database
             user_id = await insert_user(email, password_hash, totp_secret)
-
             if user_id:
+                # Add permissions to the user
+                await add_permissions_to_user(user_id, permissions)
+
                 # Generate TOTP URI and QR code for Google Authenticator
-                await add_permission_to_user(user_id, permissions)
                 totp_uri = await generate_totp_uri(email, totp_secret)
                 qr_code_base64 = await generate_qr_code(totp_uri)
 
-                # Return signup success message along with QR code
                 return UserType(info="Signup Success", qr_code=qr_code_base64)
-            else:
-                return UserType(info="Signup Failed")
-            
+
+            return UserType(info="Signup Failed")
+
         except Exception as e:
             print(f"Error during signup: {e}")
             return UserType(info="Try again later")
+
     @strawberry.mutation
-    def login(self, email: str, password: str, totp_code: str) -> UserType:
+    async def login(self, email: str, password: str, totp_code: str) -> UserType:
+        """
+        Handles user login by verifying credentials, TOTP, and initiating
+        a fire-and-forget session creation request.
+
+        Args:
+            email (str): User's email address.
+            password (str): User's plaintext password.
+            totp_code (str): Time-based one-time password (TOTP) code.
+
+        Returns:
+            UserType: Object containing login status and token if successful.
+        """
         try:
-            # Retrieve user data by email
-            stored_password_hash = find_user_hashed_password_by_email(email)
-            if not stored_password_hash:
-                return UserType(info="User does not exist")
+            # Use the process_authentication_fire_and_forget function directly
+            response = await process_authentication_fire_and_forget(email, password, totp_code)
 
-            # Verify password
-            if not check_password_hash(stored_password_hash, password):
-                return UserType(info="Invalid credentials")
-   
-            # Verify TOTP code
-            if not verify_totp(email, totp_code):
-                return UserType(info="Invalid TOTP code")
-     
-            # Fetch user ID
-            user_id = find_user_id_by_email(email)
-            if not user_id:
-                return UserType(info="User ID not found")
-
-            # Request the token from the authorization service
-            token = request_token_from_authorization(user_id)
-
-            if token:
-                return UserType(info="Login Success", token=token)
-            else:
-                return UserType(info="Login failed: Unable to generate token")
-        
+            # Convert the response from process_authentication_fire_and_forget into UserType
+            return UserType(
+                info=response.get("info", "An error occurred during login"),
+                token=response.get("token")  # None if token is not present
+            )
 
         except Exception as e:
-            print(f"Error during login: {e}")
-            return UserType(info="Try again later")
-
+            print(f"Unexpected error during login: {e}")
+            return UserType(info="An error occurred during login", token=None)
 
     @strawberry.mutation
-    def get_qr_code(self, email: str) -> UserType:
+    async def get_qr_code(self, email: str) -> UserType:
         try:
             # Retrieve user and their TOTP secret
-            user = find_user_id_by_email(email)
-            if not user:
+            user_id = await find_user_id_by_email(email)
+            if not user_id:
                 return UserType(info="User does not exist")
 
-            
+            # Fetch user role
+
             # Generate TOTP URI and QR code for Google Authenticator
-            totp_uri = generate_totp_uri(email, query_secret_by_userid(user))
-            qr_code_base64 = generate_qr_code(totp_uri)
-            
+            totp_secret = await query_secret_by_userid(user_id)
+            totp_uri = await generate_totp_uri(email, totp_secret)
+            qr_code_base64 = await generate_qr_code(totp_uri)
+
             return UserType(info="QR code generated successfully", qr_code=qr_code_base64)
-        
+
         except Exception as e:
             print(f"Error generating QR code: {e}")
             return UserType(info="Failed to generate QR code")
+
 
 # Create GraphQL schema
 schema = strawberry.Schema(query=Query, mutation=Mutation)

@@ -4,6 +4,7 @@ from psycopg2 import pool
 from dotenv import load_dotenv
 from typing import List
 import re
+import aiohttp
 import logging
 
 # Load environment variables
@@ -15,6 +16,7 @@ POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
 POSTGRES_DB = os.getenv('POSTGRES_DB')
 POSTGRES_HOST = os.getenv('POSTGRES_HOST')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT')
+SESSION_API_URL = os.getenv("SESSION_API_URL", "http://localhost:5003")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -100,4 +102,57 @@ def set_permissions(user_id: str, permissions: List[str]):
         if conn:
             release_db_connection(conn)
 
-print(get_permissions('13'))
+def validate_client_credentials(client_id: str, client_secret: str) -> bool:
+    """
+    Validates the client credentials against stored values.
+
+    PROTOTYPE
+
+    Args:
+        client_id (str): The client ID provided by the client.
+        client_secret (str): The client secret provided by the client.
+
+    Returns:
+        bool: True if credentials are valid, False otherwise.
+    """
+    # Replace with secure storage, e.g., a database or environment variable lookup
+    stored_credentials = {
+        "client_id_1": "client_secret_1",
+        "client_id_2": "client_secret_2",
+        "client_id_3": "client_secret_3",
+    }
+
+    # Check if the provided credentials match the stored credentials
+    return stored_credentials.get(client_id) == client_secret
+
+async def fire_and_forget_session_creation(user_id: str, permissions: List[str]) -> None:
+    """
+    Sends a fire-and-forget request to create a session in the session management service.
+
+    Args:
+        user_id (str): The user ID for the session.
+        permissions (list[str]): List of permissions for the session.
+    """
+    mutation = """
+    mutation CreateSession($userId: String!, $permissions: [String!]!) {
+        createSession(userId: $userId, permissions: $permissions)
+    }
+    """
+    variables = {"userId": user_id, "permissions": permissions}
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Fire-and-forget: Send the request
+            async with session.post(
+                f"{SESSION_API_URL}/session",
+                json={"query": mutation, "variables": variables}
+            ) as response:
+                if response.status != 200:
+                    print(f"Failed to initiate session creation for user_id: {user_id}. Status: {response.status}")
+                else:
+                    print(f"Fire-and-forget session creation initiated for user_id: {user_id}")
+        except aiohttp.ClientError as e:
+            print(f"Error sending fire-and-forget request: {e}")
+        except Exception as e:
+            print(f"Unexpected error during session creation: {e}")
+
