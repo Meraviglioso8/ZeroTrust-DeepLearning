@@ -10,6 +10,8 @@ __pycache__/
 # AI model/
 deep-learning/custom_bert_model
 deep-learning/Datasets
+deep-learning/coattention_bert_model/
+deep-learning/finegrained_coattention_bert_model/
 # Distribution / packaging
 .Python
 build/
