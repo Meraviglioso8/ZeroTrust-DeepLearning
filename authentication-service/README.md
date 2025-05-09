@@ -1,51 +1,61 @@
-# Authentication API references
+# Standard flow
+localhost:5001/login
 
-```
-http://localhost:5001/authentication
-```
-
-## 1. Sign Up
-
-![Sign Up API](./images/signup.png)
-
-```graphQL
-
-mutation Signup($email: String!, $password: String!) {
-  signup(email: $email, password: $password) {
-    info
-    qrCode
+# Direct flow
+localhost:5001/graphql
+mutation {
+  loginPassword(username: "ttmhuyen2110@gmail.com", password: "test") {
+    accessToken
+    refreshToken
+    idToken
+    expiresIn
   }
 }
 
-{
-  "email": "newcustomer@example.com",
-  "password": "CustomerPass123"
+# Implicit flow
+localhost:5001/graphql
+query {
+  implicitUrl(scope: "openid profile email")
 }
 
-
-```
-### 1.1 Pre-share key QR
-
-![QR](./images/qr.png)
-
-## 2. Sign In
-
-![Sign In API](./images/signin.png)
-
-```graphQL
-
-mutation Login($email: String!, $password: String!, $totpCode: String!) {
-  login(email: $email, password: $password, totpCode: $totpCode) {
-    info
-    token
+# Client credentials flow
+mutation {
+  loginClientCredentials {
+    accessToken
+    expiresIn
   }
 }
 
-{
-  "email": "newcustomer@example.com",
-  "password": "CustomerPass123",
-  "totpCode": "510118"
+# Token Exchange
+mutation Exchange($st: String!) {
+  tokenExchange(subjectToken: $st) {
+    accessToken
+    refreshToken
+    idToken
+    expiresIn
+  }
 }
 
 
-```
+# Device
+mutation {
+  deviceAuthorize {
+    deviceCode
+    userCode
+    verificationUri
+    expiresIn
+    interval
+  }
+}
+
+
+
+# 1) EC private key (P-256)
+openssl ecparam -genkey -name prime256v1 -noout -out ec_private.pem
+
+# 2) Self-signed cert valid 1 year
+openssl req -new -x509 \
+  -key ec_private.pem \
+  -out ec_cert.pem \
+  -days 365 \
+  -subj "/CN=normal_user encryption key/"

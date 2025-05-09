@@ -1,145 +1,136 @@
+import os
 import strawberry
-from helper import *
-from werkzeug.security import check_password_hash, generate_password_hash
-from typing import Optional
+from typing import Optional, Any
 from starlette.applications import Starlette
+from starlette.responses import RedirectResponse, JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 from strawberry.asgi import GraphQL
+from strawberry.permission import BasePermission
+from strawberry.types import Info
+from keycloak import KeycloakOpenID
+import requests
+import urllib3
 
-# Define Roles and Permissions
-ROLES = {
-    "admin": ["manage_users", "manage_products", "view_orders", "process_orders"],
-    "seller": ["manage_products", "view_orders"],
-    "customer": ["view_products", "place_orders"],
-}
+# ─── Disable Insecure Warnings ─────────────────────────────────────────────────
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-PERMISSIONS = {
-    "manage_users": ["create_user", "edit_user", "delete_user", "view_user"],
-    "manage_products": ["add_product", "edit_product", "delete_product", "view_product"],
-    "view_orders": ["list_orders", "view_order_details"],
-    "process_orders": ["update_order_status", "ship_order", "cancel_order"],
-    "view_products": ["list_products", "view_product_details"],
-    "place_orders": ["create_order", "cancel_own_order"],
-}
+# ─── Keycloak Configuration ────────────────────────────────────────────────────
+KEYCLOAK_SERVER   = os.getenv("KEYCLOAK_SERVER")
+REALM             = os.getenv("KEYCLOAK_REALM")
+CLIENT_ID         = os.getenv("KEYCLOAK_CLIENT_ID")
+CLIENT_SECRET     = os.getenv("KEYCLOAK_CLIENT_SECRET")
+REDIRECT_URI      = os.getenv("REDIRECT_URI")
+SPA_URL           = os.getenv("SPA_URL",           "http://localhost:6969")
 
-# Default role for signup
-DEFAULT_ROLE = "customer"
+kc = KeycloakOpenID(
+    server_url        = KEYCLOAK_SERVER,
+    realm_name        = REALM,
+    client_id         = CLIENT_ID,
+    client_secret_key = CLIENT_SECRET,
+    verify            = False
+)
 
-# GraphQL Types and Mutations
-@strawberry.type
-class UserType:
-    info: str
-    token: Optional[str] = None
-    qr_code: Optional[str] = None
+# ─── Permission Class ─────────────────────────────────────────────────────────
+class IsAuthenticated(BasePermission):
+    message = "User is not authenticated"
 
+    def has_permission(self, source: Any, info: Info, **kwargs) -> bool:
+        user = info.context.get("user")
+        return bool(user and user.get("active"))
+
+# ─── GraphQL Types ─────────────────────────────────────────────────────────────
 @strawberry.type
 class TokenType:
-    info: str
-    token: str
-    permissions: Optional[str] = None
+    access_token: str
+    refresh_token: Optional[str]
+    id_token: Optional[str]
+    expires_in: Optional[int]
 
+# ─── Query & Mutation Definitions ──────────────────────────────────────────────
 @strawberry.type
 class Query:
     @strawberry.field
-    def placeholder(self) -> str:
-        return "This is a placeholder query."
-
+    def protected_data(self, info: Info) -> str:
+        username = info.context["user"]["preferred_username"]
+        return f"Hello, {username}! Your token is valid."
 
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    async def signup(self, email: str, password: str) -> UserType:
-        try:
-            print(f"Starting signup process for email: {email}")
-
-            # Check if the user already exists
-            if await is_duplicate(email):
-                return UserType(info="User already exists")
-
-            # Generate hashed password and TOTP secret
-            password_hash = generate_password_hash(password)
-            totp_secret = await generate_totp_secret()
-
-            # Assign the default role and permissions
-            role = DEFAULT_ROLE
-            permissions = ROLES[role]
-
-            # Insert user into the database
-            user_id = await insert_user(email, password_hash, totp_secret)
-            if user_id:
-                # Add permissions to the user
-                await add_permissions_to_user(user_id, permissions)
-
-                # Generate TOTP URI and QR code for Google Authenticator
-                totp_uri = await generate_totp_uri(email, totp_secret)
-                qr_code_base64 = await generate_qr_code(totp_uri)
-
-                return UserType(info="Signup Success", qr_code=qr_code_base64)
-
-            return UserType(info="Signup Failed")
-
-        except Exception as e:
-            print(f"Error during signup: {e}")
-            return UserType(info="Try again later")
+    def login_password(self, username: str, password: str) -> TokenType:
+        tokens = kc.token(username=username, password=password)
+        return TokenType(
+            access_token = tokens["access_token"],
+            refresh_token= tokens.get("refresh_token"),
+            id_token     = tokens.get("id_token"),
+            expires_in   = tokens.get("expires_in"),
+        )
 
     @strawberry.mutation
-    async def login(self, email: str, password: str, totp_code: str) -> UserType:
+    def refresh_token(self, refresh_token: str) -> TokenType:
         """
-        Handles user login by verifying credentials, TOTP, and initiating
-        a fire-and-forget session creation request.
-
-        Args:
-            email (str): User's email address.
-            password (str): User's plaintext password.
-            totp_code (str): Time-based one-time password (TOTP) code.
-
-        Returns:
-            UserType: Object containing login status and token if successful.
+        Exchange an existing refresh_token for a new access_token.
         """
-        try:
-            # Use the process_authentication_fire_and_forget function directly
-            response = await process_authentication_fire_and_forget(email, password, totp_code)
+        new_tokens = kc.refresh_token(refresh_token)
+        return TokenType(
+            access_token = new_tokens["access_token"],
+            refresh_token= new_tokens.get("refresh_token"),
+            id_token     = new_tokens.get("id_token"),
+            expires_in   = new_tokens.get("expires_in"),
+        )
 
-            # Convert the response from process_authentication_fire_and_forget into UserType
-            return UserType(
-                info=response.get("info", "An error occurred during login"),
-                token=response.get("token")  # None if token is not present
-            )
-
-        except Exception as e:
-            print(f"Unexpected error during login: {e}")
-            return UserType(info="An error occurred during login", token=None)
-
-    @strawberry.mutation
-    async def get_qr_code(self, email: str) -> UserType:
-        try:
-            # Retrieve user and their TOTP secret
-            user_id = await find_user_id_by_email(email)
-            if not user_id:
-                return UserType(info="User does not exist")
-
-            # Fetch user role
-
-            # Generate TOTP URI and QR code for Google Authenticator
-            totp_secret = await query_secret_by_userid(user_id)
-            totp_uri = await generate_totp_uri(email, totp_secret)
-            qr_code_base64 = await generate_qr_code(totp_uri)
-
-            return UserType(info="QR code generated successfully", qr_code=qr_code_base64)
-
-        except Exception as e:
-            print(f"Error generating QR code: {e}")
-            return UserType(info="Failed to generate QR code")
-
-
-# Create GraphQL schema
 schema = strawberry.Schema(query=Query, mutation=Mutation)
 
-# Starlette ASGI app setup
-app = Starlette(debug=True)
-graphql_app = GraphQL(schema)
-app.add_route("/authentication", graphql_app)
+# ─── Custom GraphQL App with Cookie Context ────────────────────────────────────
+class AuthenticatedGraphQL(GraphQL):
+    async def get_context(self, request, response):
+        context = await super().get_context(request, response)
+        token = request.cookies.get("access_token")
+        if token:
+            info = kc.introspect(token)
+            context["user"] = info if info.get("active") else None
+        return context
 
-# Main entry point
+graphql_app = AuthenticatedGraphQL(schema)
+
+# ─── Starlette App & Routes ────────────────────────────────────────────────────
+app = Starlette(debug=True)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:6969"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_route("/graphql", graphql_app)
+app.add_websocket_route("/graphql", graphql_app)
+
+@app.route("/login")
+async def login(request):
+    return RedirectResponse(
+        kc.auth_url(redirect_uri=REDIRECT_URI, scope="openid")
+    )
+
+@app.route("/callback")
+async def callback(request):
+    code = request.query_params.get("code")
+    if not code:
+        return JSONResponse({"error": "No code provided"}, status_code=400)
+    tok = kc.token(
+        grant_type   = "authorization_code",
+        code         = code,
+        redirect_uri = REDIRECT_URI
+    )
+    resp = RedirectResponse(SPA_URL)
+    resp.set_cookie(
+        "access_token",
+        tok["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="none"
+    )
+    return resp
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5001)

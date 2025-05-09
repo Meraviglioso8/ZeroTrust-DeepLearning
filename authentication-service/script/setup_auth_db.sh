@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Environment variables for the Authentication Service database
 AUTH_DB_HOST="localhost"
-AUTH_DB_PORT=5433
+AUTH_DB_PORT=5432
 AUTH_DB_NAME="auth_db"
 AUTH_DB_USER="auth_user"
 AUTH_DB_PASS="auth_pass"
