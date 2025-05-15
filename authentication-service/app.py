@@ -8,11 +8,11 @@ from strawberry.asgi import GraphQL
 from strawberry.permission import BasePermission
 from strawberry.types import Info
 from keycloak import KeycloakOpenID
+from dotenv import load_dotenv
 import requests
-import urllib3
 
-# ─── Disable Insecure Warnings ─────────────────────────────────────────────────
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# ─── Load Environment Variables from .env ───────────────────────────────────
+load_dotenv()  # This loads the environment variables from the .env file
 
 # ─── Keycloak Configuration ────────────────────────────────────────────────────
 KEYCLOAK_SERVER   = os.getenv("KEYCLOAK_SERVER")
@@ -20,7 +20,7 @@ REALM             = os.getenv("KEYCLOAK_REALM")
 CLIENT_ID         = os.getenv("KEYCLOAK_CLIENT_ID")
 CLIENT_SECRET     = os.getenv("KEYCLOAK_CLIENT_SECRET")
 REDIRECT_URI      = os.getenv("REDIRECT_URI")
-SPA_URL           = os.getenv("SPA_URL",           "http://localhost:6969")
+SPA_URL           = os.getenv("SPA_URL")
 
 kc = KeycloakOpenID(
     server_url        = KEYCLOAK_SERVER,
@@ -59,12 +59,20 @@ class Mutation:
     @strawberry.mutation
     def login_password(self, username: str, password: str) -> TokenType:
         tokens = kc.token(username=username, password=password)
+
+        # Assuming tokens structure:
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        id_token = tokens.get("id_token")
+        expires_in = tokens.get("expires_in")
+
         return TokenType(
-            access_token = tokens["access_token"],
-            refresh_token= tokens.get("refresh_token"),
-            id_token     = tokens.get("id_token"),
-            expires_in   = tokens.get("expires_in"),
+            access_token=access_token,
+            refresh_token=refresh_token,
+            id_token=id_token,
+            expires_in=expires_in,
         )
+
 
     @strawberry.mutation
     def refresh_token(self, refresh_token: str) -> TokenType:
